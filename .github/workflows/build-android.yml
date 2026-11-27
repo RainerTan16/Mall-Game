@@ -22,7 +22,9 @@ jobs:
           java-version: "17"
 
       - uses: android-actions/setup-android@v3
-
+        with:
+          packages: ''
+          
       - name: Install Android SDK packages
         run: |
           yes | sdkmanager --licenses > /dev/null || true
