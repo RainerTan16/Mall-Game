@@ -1,0 +1,81 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  GODOT_VERSION: "4.3"
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager "platform-tools" "build-tools;34.0.0" "platforms;android-34" "cmdline-tools;latest" "cmake;3.10.2.4988404" "ndk;23.2.8568313"
+
+      - name: Download Godot and export templates
+        run: |
+          mkdir -p "$HOME/godot" && cd "$HOME/godot"
+          BASE="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable"
+          wget -q "$BASE/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip"
+          wget -q "$BASE/Godot_v${GODOT_VERSION}-stable_export_templates.tpz"
+          unzip -q "Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip"
+          mv "Godot_v${GODOT_VERSION}-stable_linux.x86_64" godot && chmod +x godot
+          mkdir -p "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable"
+          unzip -q "Godot_v${GODOT_VERSION}-stable_export_templates.tpz"
+          mv templates/* "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable/"
+
+      - name: Configure Godot Android settings (debug keystore, generated in CI)
+        run: |
+          keytool -genkey -v -keystore "$HOME/debug.keystore" -alias androiddebugkey \
+            -keyalg RSA -keysize 2048 -validity 10000 -storepass android -keypass android \
+            -dname "CN=Android Debug,O=Android,C=US"
+          mkdir -p "$HOME/.config/godot"
+          cat > "$HOME/.config/godot/editor_settings-${GODOT_VERSION}.tres" <<EOT
+          [gd_resource type="EditorSettings" format=3]
+
+          [resource]
+          export/android/android_sdk_path = "$ANDROID_HOME"
+          export/android/java_sdk_path = "$JAVA_HOME"
+          export/android/debug_keystore = "$HOME/debug.keystore"
+          export/android/debug_keystore_user = "androiddebugkey"
+          export/android/debug_keystore_pass = "android"
+          EOT
+
+      - name: Import and validate project
+        run: |
+          GODOT="$HOME/godot/godot"
+          $GODOT --headless --path . --import 2>&1 | tee import.log || true
+          $GODOT --headless --path . -s tests/smoke.gd 2>&1 | tee test.log
+          if grep -E "SCRIPT ERROR|Parse Error|Assertion failed" import.log test.log; then
+            echo "Validation failed"; exit 1
+          fi
+          grep -q "^OK" test.log
+
+      - name: Export debug APK
+        run: |
+          mkdir -p build
+          "$HOME/godot/godot" --headless --path . --export-debug "Android Debug" build/malltopia-debug.apk
+          ls -la build
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: malltopia-debug-apk
+          path: build/malltopia-debug.apk
+          if-no-files-found: error
